@@ -205,6 +205,56 @@ The paper trains with 90% unlabeled data for flow reconstruction and 10% labeled
 
 These are intentionally not implemented yet because the video/action data and GPU environment are on another server.
 
+- Continue HPC setup:
+
+```text
+repo: /data/user/wsong890/shuaizhou/d0
+env:  /data/user/wsong890/envs/shuai_d0
+tmux: motus_latent_shuai
+```
+
+- Current HPC status:
+
+```text
+shuai_d0 cloned from motus env
+torch: 2.7.1+cu126
+CPU fake-DC-AE smoke test passes
+PTLFlow and EfficientViT submodules copied from local and pinned correctly
+timm installed from local wheel
+onnx installed from local wheel
+PySocks and socksio installed from local wheels for small HF/httpx checks
+DC-AE checkpoint stored under this repo:
+  latent_action_vae/checkpoints/dc-ae-f128c512-mix-1.0/
+GPU DC-AE shape smoke passed on debug node:
+  dcae_latent (1, 512, 2, 2)
+  tokens      (1, 4, 512)
+  mu/logvar   (1, 14)
+```
+
+- DC-AE loading notes:
+
+```text
+EfficientViT package imports unrelated optional modules while loading DC-AE.
+The wrapper now direct-loads EfficientViT's dc_ae.py to avoid SAM/seg/export extras.
+onnxsim is shimmed in dcae_wrapper.py because it is only needed for ONNX export.
+```
+
+  This does not change the latent-action VAE architecture; it only prevents
+  unused EfficientViT extras from blocking DC-AE.
+
+- Load the local DC-AE checkpoint:
+
+```bash
+conda run -p /data/user/wsong890/envs/shuai_d0 \
+  python -c "from latent_action_vae.dcae_wrapper import load_dcae; p='latent_action_vae/checkpoints/dc-ae-f128c512-mix-1.0'; m=load_dcae(p, device='cpu'); print(type(m).__name__); print(m.spatial_compression_ratio)"
+```
+
+- Large files should be downloaded locally and transferred to the cluster:
+
+```text
+download locally -> scp to HPC /tmp or repo third_party -> install/extract there
+```
+
 - Add `extract_dpflow.py`: video or frame sequence -> DPFlow XY `.pt` with shape `[T - 1, 2, H, W]`.
 - Install and validate PTLFlow/DPFlow on the GPU server.
 - Download and validate `mit-han-lab/dc-ae-f128c512-mix-1.0`.
@@ -218,6 +268,48 @@ flow RGB [B, 3, 256, 256]
 ```
 
 - Inspect the real human video data layout and decide whether to cut segments or write an episode+JSON dataset.
+- Inspect local HPC data roots:
+
+```text
+/data/user/wsong890/data
+```
+
+  Look for known public human datasets, egocentric video collections, and robot
+  datasets that already provide image/action pairs.
+  Current check found only an empty `EgoDex` directory there.
+
+- If needed, inspect the separate human-video server and pull one sample video
+  plus one JSON only:
+
+```text
+host alias: lft-4090-2
+path: /data/LFT-W02_data/shuaizhou/human_video_data/D0_huamn_dataset
+```
+
+  EgoVerse is present there with this layout:
+
+```text
+EgoVerse/annotation/<task>/<sample_id>.json
+EgoVerse/video/<task>/<sample_id>.mp4
+```
+
+  Pulled one small sample into the HPC repo for loader reference:
+
+```text
+dataset/human_data/egoverse_sample/freeform_do_dishes/305.json
+dataset/human_data/egoverse_sample/freeform_do_dishes/305.mp4
+```
+
+  Sample metadata:
+
+```text
+task: freeform_do_dishes
+sample_id: 305
+video: 640x480, 30 fps, 500 frames, 16.67 s
+json: description/fps/sample_id/nframes/segments
+segment: start_frame=0, end_frame=491, instruction="Wash the blue bowl with sponge"
+```
+
 - Inspect labeled robot data format before implementing action alignment:
 
 ```text
@@ -242,3 +334,40 @@ human_ego_pretrain/latent_action_dim14/*.pt
 ```
 
 - Add a dataloader smoke test against `data/latent_action/latent_action_dataset.py`.
+
+## V0 Mixed-Data Training Plan
+
+Use this first-pass recipe for latent-action VAE training:
+
+- Unlabeled reconstruction data: EgoVerse egocentric human videos copied under
+  `dataset/human_data/egoverse_raw/EgoVerse`, excluding `debug` for the first run.
+- Labeled weak action-supervision data:
+  `/data/user/wsong890/lifuhao/Data/aloha_preprocessed`.
+- Robot camera: `observations/images/cam_high`.
+- Robot action label: real `action` with shape `[T, 14]`.
+- Do not use `relative_action` in v0 because the Motus loss is written against
+  `a_real` and describes alignment to the true control distribution.
+- Mixed sampling: batch-level 9 unlabeled batches for every 1 labeled batch.
+
+New scripts:
+
+```bash
+python -m latent_action_vae.build_manifests
+python -m latent_action_vae.cache_flows --source both --flow-backend ptlflow --ptlflow-model dpflow
+python -m latent_action_vae.train_mixed
+```
+
+If the paper DPFlow backend is unavailable in the current environment, the
+scripts can run small smoke tests with `--flow-backend opencv`. That fallback is
+only for pipeline validation and is not the paper-aligned flow backend.
+
+## HPC GPU Test Command
+
+Use an interactive debug allocation before running GPU-only checks:
+
+```bash
+srun -p debug -N 1 -n 1 --cpus-per-task=8 --gres=gpu:1 --pty bash
+conda activate /data/user/wsong890/envs/shuai_d0
+cd /data/user/wsong890/shuaizhou/d0
+python -m latent_action_vae.smoke_test
+```
