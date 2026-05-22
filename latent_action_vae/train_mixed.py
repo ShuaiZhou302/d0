@@ -81,7 +81,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--freeze-dcae", action="store_true")
     parser.add_argument("--flow-backend", choices=["ptlflow", "opencv"], default="ptlflow")
     parser.add_argument("--ptlflow-model", default="dpflow")
-    parser.add_argument("--ptlflow-ckpt", default=None)
+    parser.add_argument("--ptlflow-ckpt", default="things")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--image-size", type=int, default=256)
     parser.add_argument("--max-flow", type=float, default=20.0)

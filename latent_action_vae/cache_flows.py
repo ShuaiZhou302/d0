@@ -39,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source", choices=["egoverse", "aloha", "both"], default="both")
     parser.add_argument("--flow-backend", choices=["ptlflow", "opencv"], default="ptlflow")
     parser.add_argument("--ptlflow-model", default="dpflow")
-    parser.add_argument("--ptlflow-ckpt", default=None)
+    parser.add_argument("--ptlflow-ckpt", default="things")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--image-size", type=int, default=256)
     parser.add_argument("--max-flow", type=float, default=20.0)

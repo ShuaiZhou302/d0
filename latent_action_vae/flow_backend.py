@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import os
 import sys
+import types
+import importlib
 from pathlib import Path
 from typing import Protocol
 
@@ -46,7 +49,12 @@ class PTLFlowBackend:
         third_party = Path(__file__).resolve().parent / "third_party" / "ptlflow"
         if third_party.exists() and str(third_party) not in sys.path:
             sys.path.insert(0, str(third_party))
+        if model_name == "dpflow":
+            os.environ.setdefault("PTLFLOW_MODEL_IMPORTS", "dpflow")
+            install_dpflow_only_ptlflow_models_package(third_party)
         from ptlflow import get_model, get_model_names
+        if model_name == "dpflow":
+            importlib.import_module("ptlflow.models.dpflow")
 
         available = get_model_names()
         if model_name not in available:
@@ -86,3 +94,12 @@ def build_flow_backend(
     if backend == "ptlflow":
         return PTLFlowBackend(model_name=model_name, ckpt_path=ckpt_path, device=device)
     raise ValueError(f"Unknown flow backend: {backend}")
+
+
+def install_dpflow_only_ptlflow_models_package(third_party: Path) -> None:
+    """Avoid importing every PTLFlow model when only DPFlow is needed."""
+    if "ptlflow.models" in sys.modules:
+        return
+    models_pkg = types.ModuleType("ptlflow.models")
+    models_pkg.__path__ = [str(third_party / "ptlflow" / "models")]
+    sys.modules["ptlflow.models"] = models_pkg
