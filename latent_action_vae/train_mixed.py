@@ -79,7 +79,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-dir", type=Path, default=Path("latent_action_vae/runs/mixed_smoke"))
     parser.add_argument("--dcae-model", default=DEFAULT_DCAE_MODEL)
     parser.add_argument("--freeze-dcae", action="store_true")
-    parser.add_argument("--flow-backend", choices=["ptlflow", "opencv"], default="ptlflow")
+    parser.add_argument("--flow-backend", choices=["ptlflow"], default="ptlflow")
     parser.add_argument("--ptlflow-model", default="dpflow")
     parser.add_argument("--ptlflow-ckpt", default="things")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")

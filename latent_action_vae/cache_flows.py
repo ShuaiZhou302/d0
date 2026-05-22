@@ -37,7 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--aloha-manifest", type=Path, default=Path("dataset/human_data/manifests/aloha_labeled.jsonl"))
     parser.add_argument("--cache-root", type=Path, default=Path("latent_action_vae/cache/flow_rgb"))
     parser.add_argument("--source", choices=["egoverse", "aloha", "both"], default="both")
-    parser.add_argument("--flow-backend", choices=["ptlflow", "opencv"], default="ptlflow")
+    parser.add_argument("--flow-backend", choices=["ptlflow"], default="ptlflow")
     parser.add_argument("--ptlflow-model", default="dpflow")
     parser.add_argument("--ptlflow-ckpt", default="things")
     parser.add_argument("--device", default="cuda")

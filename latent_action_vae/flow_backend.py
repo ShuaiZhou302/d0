@@ -7,7 +7,6 @@ import importlib
 from pathlib import Path
 from typing import Protocol
 
-import cv2
 import numpy as np
 import torch
 
@@ -15,31 +14,6 @@ import torch
 class FlowBackend(Protocol):
     def compute(self, frame0: torch.Tensor, frame1: torch.Tensor) -> torch.Tensor:
         """Return optical flow as [2,H,W] float tensor in pixel units."""
-
-
-class OpenCVFarnebackBackend:
-    """CPU fallback for smoke tests when the paper DPFlow backend is unavailable."""
-
-    name = "opencv_farneback"
-
-    def compute(self, frame0: torch.Tensor, frame1: torch.Tensor) -> torch.Tensor:
-        image0 = tensor_chw_to_uint8_rgb(frame0)
-        image1 = tensor_chw_to_uint8_rgb(frame1)
-        gray0 = cv2.cvtColor(image0, cv2.COLOR_RGB2GRAY)
-        gray1 = cv2.cvtColor(image1, cv2.COLOR_RGB2GRAY)
-        flow = cv2.calcOpticalFlowFarneback(
-            gray0,
-            gray1,
-            None,
-            pyr_scale=0.5,
-            levels=3,
-            winsize=15,
-            iterations=3,
-            poly_n=5,
-            poly_sigma=1.2,
-            flags=0,
-        )
-        return torch.from_numpy(flow).permute(2, 0, 1).float()
 
 
 class PTLFlowBackend:
@@ -89,8 +63,6 @@ def build_flow_backend(
     ckpt_path: str | None = None,
     device: str = "cuda",
 ) -> FlowBackend:
-    if backend == "opencv":
-        return OpenCVFarnebackBackend()
     if backend == "ptlflow":
         return PTLFlowBackend(model_name=model_name, ckpt_path=ckpt_path, device=device)
     raise ValueError(f"Unknown flow backend: {backend}")

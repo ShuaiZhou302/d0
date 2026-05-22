@@ -353,13 +353,18 @@ New scripts:
 
 ```bash
 python -m latent_action_vae.build_manifests
-python -m latent_action_vae.cache_flows --source both --flow-backend ptlflow --ptlflow-model dpflow
-python -m latent_action_vae.train_mixed
+python -m latent_action_vae.cache_flows --source both --flow-backend ptlflow --ptlflow-model dpflow --ptlflow-ckpt latent_action_vae/checkpoints/dpflow/dpflow-things-2012b5d6.ckpt
+python -m latent_action_vae.train_mixed --flow-backend ptlflow --ptlflow-model dpflow --ptlflow-ckpt latent_action_vae/checkpoints/dpflow/dpflow-things-2012b5d6.ckpt
 ```
 
-If the paper DPFlow backend is unavailable in the current environment, the
-scripts can run small smoke tests with `--flow-backend opencv`. That fallback is
-only for pipeline validation and is not the paper-aligned flow backend.
+The flow backend is DPFlow through PTLFlow. The current HPC copy stores the
+official `things` checkpoint at:
+
+```text
+latent_action_vae/checkpoints/dpflow/dpflow-things-2012b5d6.ckpt
+```
+
+OpenCV flow is intentionally not used for this pipeline.
 
 ## HPC GPU Test Command
 
