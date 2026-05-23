@@ -16,7 +16,6 @@ class LatentActionVAEConfig:
     hidden_dim: int = 1024
     encoder_depth: int = 2
     decoder_depth: int = 2
-    action_dim: int = 14
 
 
 class PaperLatentActionVAE(nn.Module):
@@ -68,7 +67,6 @@ class PaperLatentActionVAE(nn.Module):
             out_dim=flat_dim,
             depth=self.config.decoder_depth,
         )
-        self.action_head = nn.Linear(self.config.latent_dim, self.config.action_dim)
 
     def encode_tokens(self, flow_rgb: torch.Tensor) -> torch.Tensor:
         latent = self.dcae.encode(flow_rgb)
@@ -101,7 +99,10 @@ class PaperLatentActionVAE(nn.Module):
         z = self.reparameterize(mu, logvar)
         recon_tokens = self.decode_tokens(z)
         recon_flow_rgb = self.decode_flow_rgb(recon_tokens)
-        pred_action = self.action_head(z)
+        # The paper aligns the 14D latent action itself to real actions. Use mu
+        # as the deterministic predicted action while z stays stochastic for
+        # reconstruction during training.
+        pred_action = mu
         return {
             "recon": recon_flow_rgb,
             "recon_tokens": recon_tokens,

@@ -141,7 +141,7 @@ def main() -> None:
 
     device = torch.device(args.device)
     dcae = load_dcae(args.dcae_model, device=device, trainable=not args.freeze_dcae)
-    config = LatentActionVAEConfig(hidden_dim=args.hidden_dim, action_dim=14)
+    config = LatentActionVAEConfig(hidden_dim=args.hidden_dim)
     model = PaperLatentActionVAE(dcae=dcae, config=config, freeze_dcae=args.freeze_dcae).to(device)
     optim = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=args.lr, weight_decay=1.0e-4)
 

@@ -19,6 +19,30 @@ DPFlow optical flow [T - 1, 2, H, W]
 
 `baseline_conv_vae.py` contains the earlier simple Conv VAE only as a cheap baseline. It is not the main implementation.
 
+## Paper-Confirmed Structure
+
+The Motus paper specifies this latent-action path:
+
+```text
+DPFlow optical flow
+-> flow RGB
+-> DC-AE reconstruction module
+-> four 512-dimensional tokens
+-> lightweight encoder
+-> 14D latent action
+```
+
+The paper also writes the alignment term as matching real actions to the
+predicted action/latent action. It does **not** describe a separate `14D -> 14D`
+action head after the latent. Therefore `model.py` now uses the encoder mean
+`mu` directly as `pred_action` for action supervision and export. The sampled
+`z` is used for the VAE reconstruction path during training.
+
+One detail is still not public: the paper does not say whether `a_pred` in the
+alignment loss is the sampled latent `z` or a deterministic VAE mean. We use
+`mu` because it gives a stable latent-action label at export time and avoids
+training the action alignment target against sampling noise.
+
 ## Files
 
 - `model.py`: DC-AE-token latent action VAE, with `[B, 4, 512] -> z14 -> [B, 4, 512]`.
@@ -119,6 +143,8 @@ Reason: the public checkpoint is trained for natural images, while this task rec
 
 There is a `--freeze-dcae` flag for ablations only.
 
+This is an implementation choice, not a paper-confirmed detail.
+
 ## Flow RGB Convention
 
 The figure shows a colorized flow image, but the paper does not specify the exact color wheel or scale. Current implementation uses a deterministic HSV-style conversion:
@@ -131,6 +157,20 @@ RGB [0, 1] -> normalized RGB [-1, 1]
 ```
 
 This keeps the pipeline paper-aligned while leaving the convention easy to swap if the authors clarify it.
+
+This is an implementation choice, not a paper-confirmed detail.
+
+## Lightweight Encoder/Decoder
+
+The paper only says "lightweight encoder" and does not publish the exact module.
+Current v0 uses a small MLP with `Linear -> LayerNorm -> SiLU` blocks to map:
+
+```text
+[B, 4, 512] -> flatten [B, 2048] -> mu/logvar [B, 14]
+[B, 14] -> [B, 2048] -> [B, 4, 512]
+```
+
+This is an implementation choice, not a paper-confirmed detail.
 
 ## Smoke Test
 
@@ -190,7 +230,30 @@ torch.Tensor  # [T - 1, 14]
 
 The paper trains with 90% unlabeled data for flow reconstruction and 10% labeled trajectories for weak action supervision. The labeled portion includes task-agnostic data, following AnyPos/Curobo, and standard robot demonstrations.
 
-`model.py` already includes an `action_head` and `latent_action_vae_loss(..., robot_action=...)` hook. The actual mixed dataloader is intentionally not implemented yet because we need to inspect the robot data format on the GPU/data server first.
+`latent_action_vae_loss(..., robot_action=...)` applies the alignment term
+directly between the real 14D robot action and `outputs["pred_action"]`, where
+`pred_action == mu`.
+
+## Task-Agnostic Robot Data
+
+The Motus paper says task-agnostic data follows AnyPos: use cuRobo to randomly
+sample the target robot action space and collect image-action pairs. AnyPos
+reports Mobile ALOHA with 14D joint-position control, three RGB cameras, and
+610k task-agnostic image-action pairs collected automatically.
+
+As of this repo version, we do not have a public downloaded AnyPos task-agnostic
+dataset in the project. cuRobo is a motion-generation/IK/collision-checking
+library, not a dataset by itself. To reproduce this part exactly, we need either:
+
+- an official AnyPos/Motus task-agnostic image-action release, if the authors
+  share it;
+- or a local generation pipeline: target robot model + camera setup + cuRobo
+  sampling/planning + simulator or real robot renderer/logger to save
+  `image_t, image_t+1, action_t`.
+
+For v0, `aloha_preprocessed` standard demonstrations provide the labeled
+robot-action supervision. That covers the "standard robot demonstrations" part
+of Motus, but not the AnyPos-style task-agnostic portion yet.
 
 ## Remaining Unknowns
 
@@ -200,6 +263,7 @@ The paper trains with 90% unlabeled data for flow reconstruction and 10% labeled
 - Exact lightweight encoder/decoder architecture.
 - Exact loss weights for reconstruction, action alignment, token reconstruction, and KL.
 - Exact robot labeled datasets and action normalization.
+- Whether the action alignment term uses VAE `mu` or sampled `z`; this repo uses `mu`.
 
 ## TODO Before Real Training
 
@@ -255,9 +319,11 @@ conda run -p /data/user/wsong890/envs/shuai_d0 \
 download locally -> scp to HPC /tmp or repo third_party -> install/extract there
 ```
 
-- Add `extract_dpflow.py`: video or frame sequence -> DPFlow XY `.pt` with shape `[T - 1, 2, H, W]`.
-- Install and validate PTLFlow/DPFlow on the GPU server.
-- Download and validate `mit-han-lab/dc-ae-f128c512-mix-1.0`.
+- DPFlow extraction is implemented through PTLFlow only. OpenCV flow is not a
+  supported backend in this pipeline.
+- PTLFlow/DPFlow is installed and validated on the GPU server.
+- `mit-han-lab/dc-ae-f128c512-mix-1.0` is stored under the repo checkpoint
+  directory on the GPU server.
 - Run a real DC-AE shape test:
 
 ```text
@@ -310,13 +376,13 @@ json: description/fps/sample_id/nframes/segments
 segment: start_frame=0, end_frame=491, instruction="Wash the blue bowl with sponge"
 ```
 
-- Inspect labeled robot data format before implementing action alignment:
+- Labeled robot data format:
 
 ```text
 image_t / image_t+1 / action_t
-video / action sequence
-action dim and normalization
-frame-action frequency alignment
+camera: observations/images/cam_high
+action key: action
+action dim: 14
 ```
 
 - Implement mixed training batches:
@@ -326,7 +392,9 @@ frame-action frequency alignment
 10% labeled trajectory weak action supervision
 ```
 
-- Enable `robot_action` in the training loop and tune `action_weight` / `beta`.
+- Mixed training is implemented in `train_mixed.py`. Current v0 hyperparameters
+  are `action_weight=1.0` and `beta=1e-4`; Motus does not publish these values,
+  so they are placeholders for the first runnable pipeline.
 - Add export pipeline from trained checkpoint to Motus format:
 
 ```text

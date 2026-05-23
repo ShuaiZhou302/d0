@@ -33,10 +33,12 @@ def main() -> None:
         token_dim=int(cfg["token_dim"]),
         num_tokens=int(cfg["num_tokens"]),
         hidden_dim=int(cfg["hidden_dim"]),
-        action_dim=int(cfg["latent_dim"]),
     )
     model = PaperLatentActionVAE(dcae=dcae, config=model_cfg, freeze_dcae=True).to(device)
-    model.load_state_dict(ckpt["model"], strict=True)
+    state = dict(ckpt["model"])
+    state.pop("action_head.weight", None)
+    state.pop("action_head.bias", None)
+    model.load_state_dict(state, strict=True)
     model.eval()
 
     flow = load_flow_tensor(args.input)
