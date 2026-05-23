@@ -320,7 +320,9 @@ class UniDiffuserTrainer:
         state = batch.get('initial_state', None)
         if state is not None:
             state = state.to(self.device, dtype=self.dtype)      # [B, state_dim]
-        actions = batch['action_sequence'].to(self.device, dtype=self.dtype)  # [B, action_chunk_size, action_dim]
+        actions = batch.get('action_sequence', None)
+        if actions is not None:
+            actions = actions.to(self.device, dtype=self.dtype)  # [B, action_chunk_size, action_dim]
         action_mask = batch.get('action_mask', None)
         if action_mask is not None:
             action_mask = action_mask.to(self.device)
@@ -429,14 +431,15 @@ class UniDiffuserTrainer:
                 lr_main = lrs[0] if len(lrs) > 0 else 0.0
                 lr_wan = lrs[1] if len(lrs) > 1 else lr_main
                 
+                action_text = f"{metrics['action_loss']:.4f}" if metrics.get('has_actions', True) else "n/a"
                 log_str = (
                     f"Step {self.global_step}/{max_steps}, "
                     f"Loss: {metrics['total_loss']:.4f} "
-                    f"(Video: {metrics['video_loss']:.4f}, Action: {metrics['action_loss']:.4f}), "
+                    f"(Video: {metrics['video_loss']:.4f}, Action: {action_text}), "
                     f"LR(main/wan): {lr_main:.2e}/{lr_wan:.2e}, Time: {step_time:.2f}s"
                 )
                 
-                if "llm_loss" in metrics:
+                if metrics.get("llm_loss") is not None:
                     log_str += f", LLM Loss: {metrics['llm_loss']:.4f}"
                 logger.info(log_str)
                 

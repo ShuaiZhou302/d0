@@ -267,6 +267,30 @@ def _create_single_dataset(config: OmegaConf, val: bool = False):
 
         return LatentActionDataset(**params)
 
+    elif dataset_type == 'egoverse_vgm':
+        from .egoverse.egoverse_vgm_dataset import EgoVerseVgmDataset
+
+        params = {}
+        if hasattr(config, 'common'):
+            params.update({
+                'global_downsample_rate': config.common.global_downsample_rate,
+                'num_video_frames': config.common.num_video_frames,
+                'video_size': (config.common.video_height, config.common.video_width),
+            })
+
+        for key in ['train_manifest', 'val_manifest', 'manifest', 'max_samples', 'seed']:
+            if hasattr(config.dataset, key):
+                params[key] = getattr(config.dataset, key)
+        if hasattr(config.dataset, 'image_aug'):
+            params['image_aug'] = config.dataset.image_aug and not val
+        if hasattr(config.model, 'vlm') and hasattr(config.model.vlm, 'checkpoint_path'):
+            params['vlm_checkpoint_path'] = config.model.vlm.checkpoint_path
+        if hasattr(config.dataset, 'params'):
+            params.update(OmegaConf.to_object(config.dataset.params))
+        params['val'] = val
+
+        return EgoVerseVgmDataset(**params)
+
     elif dataset_type == 'aloha_agilex_2':
         from .aloha_agilex_2.aloha_agilex2_dataset import AlohaAgilex2Dataset
         
@@ -670,7 +694,8 @@ def collate_fn(batch: List[Optional[Dict[str, Any]]]) -> Optional[Dict[str, Any]
     # Stack tensors（支持无 initial_state 的样本）
     first_frames = torch.stack([sample['first_frame'] for sample in batch])
     video_frames = torch.stack([sample['video_frames'] for sample in batch])
-    action_sequences = torch.stack([sample['action_sequence'] for sample in batch])
+    has_actions = all(('action_sequence' in sample and sample['action_sequence'] is not None) for sample in batch)
+    action_sequences = torch.stack([sample['action_sequence'] for sample in batch]) if has_actions else None
     has_action_mask = all(('action_mask' in sample and sample['action_mask'] is not None) for sample in batch)
     action_masks = torch.stack([sample['action_mask'] for sample in batch]) if has_action_mask else None
     has_initial_state = all(('initial_state' in sample and sample['initial_state'] is not None) for sample in batch)
@@ -696,11 +721,12 @@ def collate_fn(batch: List[Optional[Dict[str, Any]]]) -> Optional[Dict[str, Any]
     result = {
         'first_frame': first_frames,             # [B, C, H, W]
         'video_frames': video_frames,            # [B, F, C, H, W]
-        'action_sequence': action_sequences,     # [B, F, D]
         'vlm_inputs': processed_vlm_inputs,
         'language_embedding': processed_language_embeddings,
     }
 
+    if action_sequences is not None:
+        result['action_sequence'] = action_sequences  # [B, F, D]
     if action_masks is not None:
         result['action_mask'] = action_masks
     if initial_states is not None:
