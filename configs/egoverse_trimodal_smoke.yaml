@@ -81,13 +81,8 @@ training:
 system:
   checkpoint_dir: "./checkpoints"
   log_level: "INFO"
-  # Keep Motus train/train.py identical to the reference commit. Its original
-  # logger formats llm_loss whenever the key exists, even when it is None, so
-  # human-video smoke avoids per-step logging and relies on eval/checkpoint logs.
-  log_interval: 1000
+  log_interval: 1
   save_interval: 20
-  # Reference pretrain-mode inference assumes registers even though pretrain
-  # creates none, so this smoke validates the train path and checkpoint save.
   val_interval: 1000
   num_workers: 0
   pin_memory: true

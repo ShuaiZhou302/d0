@@ -22,8 +22,8 @@ class EgoVerseTrimodalDataset(data.Dataset):
 
     The first smoke path uses zero action tokens so Motus still runs through
     Video + Action + Understanding joint attention while action loss is disabled.
-    Later, these zero tokens can be replaced by latent actions exported by the
-    latent action VAE.
+    Later, these zero tokens can be replaced by whichever action representation
+    the pretraining recipe decides to supervise.
     """
 
     def __init__(
@@ -152,15 +152,10 @@ class EgoVerseTrimodalDataset(data.Dataset):
                 "video_frames": video_frames,
                 "language_embedding": language_embedding,
                 "vlm_inputs": vlm_inputs,
-                "dataset_name": "egoverse_trimodal",
-                "sample_id": row["id"],
             }
             if self.action_mode == "zeros":
                 action_sequence = torch.zeros(self.action_chunk_size, self.action_dim, dtype=torch.float32)
-                initial_state = torch.zeros(self.action_dim, dtype=torch.float32)
-                sample["initial_state"] = initial_state
                 sample["action_sequence"] = action_sequence
-                sample["action_mask"] = torch.ones_like(action_sequence, dtype=torch.bool)
             return sample
         except Exception as exc:  # noqa: BLE001
             logger.error("Error loading EgoVerse sample %s: %s", row.get("id", "unknown"), exc)

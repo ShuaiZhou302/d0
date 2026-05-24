@@ -693,11 +693,10 @@ def collate_fn(batch: List[Optional[Dict[str, Any]]]) -> Optional[Dict[str, Any]
     if len(batch) == 0:
         return None
     
-    # Stack tensors（支持无 initial_state 的样本）
+    # Stack tensors
     first_frames = torch.stack([sample['first_frame'] for sample in batch])
     video_frames = torch.stack([sample['video_frames'] for sample in batch])
-    has_actions = all(('action_sequence' in sample and sample['action_sequence'] is not None) for sample in batch)
-    action_sequences = torch.stack([sample['action_sequence'] for sample in batch]) if has_actions else None
+    action_sequences = torch.stack([sample['action_sequence'] for sample in batch])
     has_action_mask = all(('action_mask' in sample and sample['action_mask'] is not None) for sample in batch)
     action_masks = torch.stack([sample['action_mask'] for sample in batch]) if has_action_mask else None
     has_initial_state = all(('initial_state' in sample and sample['initial_state'] is not None) for sample in batch)
@@ -723,12 +722,11 @@ def collate_fn(batch: List[Optional[Dict[str, Any]]]) -> Optional[Dict[str, Any]
     result = {
         'first_frame': first_frames,             # [B, C, H, W]
         'video_frames': video_frames,            # [B, F, C, H, W]
+        'action_sequence': action_sequences,     # [B, F, D]
         'vlm_inputs': processed_vlm_inputs,
         'language_embedding': processed_language_embeddings,
     }
 
-    if action_sequences is not None:
-        result['action_sequence'] = action_sequences  # [B, F, D]
     if action_masks is not None:
         result['action_mask'] = action_masks
     if initial_states is not None:

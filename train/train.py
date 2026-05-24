@@ -436,7 +436,7 @@ class UniDiffuserTrainer:
                     f"LR(main/wan): {lr_main:.2e}/{lr_wan:.2e}, Time: {step_time:.2f}s"
                 )
                 
-                if "llm_loss" in metrics:
+                if "llm_loss" in metrics and metrics["llm_loss"] is not None:
                     log_str += f", LLM Loss: {metrics['llm_loss']:.4f}"
                 logger.info(log_str)
                 
