@@ -17,8 +17,14 @@ from utils.vlm_utils import preprocess_vlm_messages
 logger = logging.getLogger(__name__)
 
 
-class EgoVerseVgmDataset(data.Dataset):
-    """Segment-level EgoVerse dataset for VGM-only human video training."""
+class EgoVerseTrimodalDataset(data.Dataset):
+    """Segment-level EgoVerse dataset for human-video trimodal training.
+
+    The first smoke path uses zero action tokens so Motus still runs through
+    Video + Action + Understanding joint attention while action loss is disabled.
+    Later, these zero tokens can be replaced by latent actions exported by the
+    latent action VAE.
+    """
 
     def __init__(
         self,
@@ -27,7 +33,10 @@ class EgoVerseVgmDataset(data.Dataset):
         val_manifest: str | None = None,
         manifest: str | None = None,
         global_downsample_rate: int = 2,
+        video_action_freq_ratio: int = 1,
         num_video_frames: int = 8,
+        action_dim: int = 14,
+        action_mode: str = "zeros",
         video_size: Tuple[int, int] = (384, 320),
         image_aug: bool = False,
         vlm_checkpoint_path: Optional[str] = None,
@@ -39,7 +48,13 @@ class EgoVerseVgmDataset(data.Dataset):
         super().__init__()
         self.manifest = Path(manifest or (val_manifest if val else train_manifest))
         self.global_downsample_rate = int(global_downsample_rate)
+        self.video_action_freq_ratio = int(video_action_freq_ratio)
         self.num_video_frames = int(num_video_frames)
+        self.action_dim = int(action_dim)
+        self.action_chunk_size = self.num_video_frames * self.video_action_freq_ratio
+        self.action_mode = str(action_mode)
+        if self.action_mode not in {"none", "zeros"}:
+            raise ValueError(f"Unsupported action_mode={self.action_mode}; expected 'none' or 'zeros'")
         self.video_size = video_size
         self.image_aug = bool(image_aug and not val)
         self.val = bool(val)
@@ -56,12 +71,19 @@ class EgoVerseVgmDataset(data.Dataset):
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Failed to load VLM processor from %s: %s", vlm_checkpoint_path, exc)
 
-        logger.info("EgoVerseVgmDataset initialized: manifest=%s samples=%d val=%s", self.manifest, len(self.rows), self.val)
+        logger.info(
+            "EgoVerseTrimodalDataset initialized: manifest=%s samples=%d val=%s action_mode=%s action_chunk_size=%d",
+            self.manifest,
+            len(self.rows),
+            self.val,
+            self.action_mode,
+            self.action_chunk_size,
+        )
 
     @staticmethod
     def _load_rows(path: Path) -> list[dict[str, Any]]:
         if not path.exists():
-            raise FileNotFoundError(f"EgoVerse VGM manifest not found: {path}")
+            raise FileNotFoundError(f"EgoVerse trimodal manifest not found: {path}")
         rows: list[dict[str, Any]] = []
         with path.open("r", encoding="utf-8") as f:
             for line in f:
@@ -69,7 +91,7 @@ class EgoVerseVgmDataset(data.Dataset):
                 if line:
                     rows.append(json.loads(line))
         if not rows:
-            raise ValueError(f"EgoVerse VGM manifest is empty: {path}")
+            raise ValueError(f"EgoVerse trimodal manifest is empty: {path}")
         return rows
 
     def __len__(self) -> int:
@@ -125,15 +147,21 @@ class EgoVerseVgmDataset(data.Dataset):
                 first_frame_pil = tensor_to_pil(first_frame)
                 vlm_inputs = preprocess_vlm_messages(row["instruction"], first_frame_pil, self.vlm_processor)
 
-            return {
+            sample = {
                 "first_frame": first_frame,
                 "video_frames": video_frames,
                 "language_embedding": language_embedding,
                 "vlm_inputs": vlm_inputs,
-                "dataset_name": "egoverse_vgm",
+                "dataset_name": "egoverse_trimodal",
                 "sample_id": row["id"],
             }
+            if self.action_mode == "zeros":
+                action_sequence = torch.zeros(self.action_chunk_size, self.action_dim, dtype=torch.float32)
+                initial_state = torch.zeros(self.action_dim, dtype=torch.float32)
+                sample["initial_state"] = initial_state
+                sample["action_sequence"] = action_sequence
+                sample["action_mask"] = torch.ones_like(action_sequence, dtype=torch.bool)
+            return sample
         except Exception as exc:  # noqa: BLE001
             logger.error("Error loading EgoVerse sample %s: %s", row.get("id", "unknown"), exc)
             return None
-

@@ -26,7 +26,7 @@ class ManifestConfig:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build train/val manifests for EgoVerse VGM-only training.")
+    parser = argparse.ArgumentParser(description="Build train/val manifests for EgoVerse human-video training.")
     parser.add_argument("--raw-root", type=Path, default=Path("dataset/human_data/egoverse_raw/EgoVerse"))
     parser.add_argument("--output-root", type=Path, default=Path("dataset/human_data/egoverse_vgm"))
     parser.add_argument("--train-ratio", type=float, default=0.95)
@@ -161,7 +161,7 @@ def main() -> None:
     if overlap:
         raise RuntimeError(f"Train/val split leaked videos: {sorted(overlap)[:5]}")
     print(
-        "built EgoVerse VGM manifests: "
+        "built EgoVerse trimodal manifests: "
         f"train_segments={len(train_rows)} val_segments={len(val_rows)} "
         f"train_videos={len(train_keys)} val_videos={len(val_keys)} "
         f"min_required_frames={cfg.min_required_frames}"
@@ -170,4 +170,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

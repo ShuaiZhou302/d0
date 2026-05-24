@@ -283,75 +283,6 @@ class VideoModule(nn.Module):
 
         return video_tokens, action_tokens, und_tokens
 
-    def process_video_und_attention(
-        self,
-        video_tokens: torch.Tensor,
-        video_adaln_modulation: tuple,
-        layer_idx: int,
-        und_tokens: torch.Tensor,
-        und_block: nn.Module,
-        und_k_lens: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Bimodal joint self-attention for VGM-only batches: WAN + Understanding."""
-        wan_layer = self.video_model.wan_model.blocks[layer_idx]
-        v_mod = video_adaln_modulation
-
-        norm_video = wan_layer.norm1(video_tokens).float() * (1 + v_mod[1].squeeze(2)) + v_mod[0].squeeze(2)
-        B, L_v, C = norm_video.shape
-        n = self.video_model.wan_model.num_heads
-        d = C // n
-
-        norm_und = und_block.norm1(und_tokens)
-        L_u = norm_und.shape[1]
-        u_qkv = torch.einsum("BTD,KNDE->KBTNE", norm_und, und_block.wan_und_qkv)
-        u_q_h, u_k_h, u_v_h = u_qkv[0], u_qkv[1], u_qkv[2]
-        u_q = und_block.wan_und_norm_q(u_q_h.flatten(-2)).view(B, L_u, n, d)
-        u_k = und_block.wan_und_norm_k(u_k_h.flatten(-2)).view(B, L_u, n, d)
-        u_v = u_v_h.view(B, L_u, n, d)
-
-        if und_k_lens is None:
-            seq_lens = torch.full((B,), L_v + L_u, dtype=torch.long, device=self.device)
-        else:
-            und_k_lens = und_k_lens.to(device=self.device, dtype=torch.long).reshape(-1)
-            if und_k_lens.numel() != B:
-                raise ValueError(f"und_k_lens batch mismatch: got {und_k_lens.numel()}, expected {B}")
-            seq_lens = L_v + und_k_lens
-        freqs = self.video_model.wan_model.freqs
-        if freqs.device != self.device:
-            freqs = freqs.to(self.device)
-
-        y, _, und_out_h = wan_layer.self_attn(
-            norm_video,
-            seq_lens,
-            self.grid_sizes,
-            freqs,
-            und_q=u_q,
-            und_k=u_k,
-            und_v=u_v,
-        )
-        und_out = und_block.wan_und_o(und_out_h.flatten(2))
-        video_tokens = video_tokens + y * v_mod[2].squeeze(2)
-        und_tokens = und_tokens + und_out
-        return video_tokens, und_tokens
-
-    def process_video_attention(
-        self,
-        video_tokens: torch.Tensor,
-        video_adaln_modulation: tuple,
-        layer_idx: int,
-    ) -> torch.Tensor:
-        """WAN-only self-attention for VGM-only batches without VLM tokens."""
-        wan_layer = self.video_model.wan_model.blocks[layer_idx]
-        v_mod = video_adaln_modulation
-        norm_video = wan_layer.norm1(video_tokens).float() * (1 + v_mod[1].squeeze(2)) + v_mod[0].squeeze(2)
-        B, L_v, _ = norm_video.shape
-        seq_lens = torch.full((B,), L_v, dtype=torch.long, device=self.device)
-        freqs = self.video_model.wan_model.freqs
-        if freqs.device != self.device:
-            freqs = freqs.to(self.device)
-        y = wan_layer.self_attn(norm_video, seq_lens, self.grid_sizes, freqs)
-        return video_tokens + y * v_mod[2].squeeze(2)
-
 
 class UndModule(nn.Module):
     """Understanding module - handles VLM with understanding queries and Understanding Expert."""
@@ -935,7 +866,6 @@ class Motus(nn.Module):
             Dictionary containing losses and metrics
         """
         B = video_frames.shape[0]
-        has_actions = actions is not None
 
         # 1. Video pipeline
         # Normalize/format
@@ -965,56 +895,45 @@ class Motus(nn.Module):
         # Latent to Tokens
         video_tokens = self.video_module.prepare_input(noisy_video_latent.to(self.dtype))
 
-        # 2. Optional action pipeline
+        # 2. Action pipeline 
         action_mask_float = None
-        action_tokens = None
-        action_target = None
-        action_t_embed = None
-        sigma_action = None
-        if has_actions and action_mask is not None:
+        if action_mask is not None:
             action_mask_float = action_mask.to(device=actions.device, dtype=actions.dtype)
 
-        if has_actions:
-            timestep_id_action = torch.randint(0, self.fm_train_scheduler_action.num_train_timesteps, (B,))
-            action_t_embed = self.fm_train_scheduler_action.timesteps[timestep_id_action].to(dtype=self.dtype, device=self.device)  # [B]
-            sigma_action = self.fm_train_scheduler_action.sigmas[timestep_id_action].to(dtype=self.dtype, device=self.device).view(B, 1, 1)
-            action_noise = torch.randn_like(actions, dtype=self.dtype)
-            if action_mask_float is not None:
-                action_noise = action_noise * action_mask_float
-            noisy_actions = actions * (1 - sigma_action) + action_noise * sigma_action
-            action_target = action_noise - actions
-            if action_mask_float is not None:
-                noisy_actions = noisy_actions * action_mask_float
-                action_target = action_target * action_mask_float
+        timestep_id_action = torch.randint(0, self.fm_train_scheduler_action.num_train_timesteps, (B,))
+        # Discrete timesteps for time embedding (0..num_train_timesteps)
+        action_t_embed = self.fm_train_scheduler_action.timesteps[timestep_id_action].to(dtype=self.dtype, device=self.device)  # [B]
+        # Sigma for action noise mixture
+        sigma_action = self.fm_train_scheduler_action.sigmas[timestep_id_action].to(dtype=self.dtype, device=self.device).view(B, 1, 1)
+        action_noise = torch.randn_like(actions, dtype=self.dtype)
+        if action_mask_float is not None:
+            action_noise = action_noise * action_mask_float
+        noisy_actions = actions * (1 - sigma_action) + action_noise * sigma_action
+        action_target = action_noise - actions
+        if action_mask_float is not None:
+            noisy_actions = noisy_actions * action_mask_float
+            action_target = action_target * action_mask_float
 
-            if self.action_expert.config.num_registers > 0 and self.action_expert.registers is not None:
-                registers = self.action_expert.registers.expand(B, -1, -1)  # [B, num_registers, dim]
-            else:
-                registers = None
-            if self.config.training_mode == 'pretrain':
-                action_tokens = self.action_expert.input_encoder(None, noisy_actions, registers)
-            else:
-                state_tokens = state.unsqueeze(1).to(self.dtype)
-                action_tokens = self.action_expert.input_encoder(state_tokens, noisy_actions, registers)
-
-        if vlm_inputs is not None:
-            und_tokens, llm_loss = self.und_module.extract_und_features(vlm_inputs)  # [B, seq_len, und_dim]
-            und_k_lens = self._build_und_k_lens(vlm_inputs, und_tokens)
+        # Encode Action Chunk with optional Registers
+        if self.action_expert.config.num_registers > 0 and self.action_expert.registers is not None:
+            registers = self.action_expert.registers.expand(B, -1, -1)  # [B, num_registers, dim]
         else:
-            und_tokens = None
-            und_k_lens = None
-            llm_loss = None
+            registers = None
+        if self.config.training_mode == 'pretrain':
+            action_tokens = self.action_expert.input_encoder(None, noisy_actions, registers)
+        else:
+            state_tokens = state.unsqueeze(1).to(self.dtype)
+            action_tokens = self.action_expert.input_encoder(state_tokens, noisy_actions, registers)
+
+        und_tokens,llm_loss = self.und_module.extract_und_features(vlm_inputs)  # [B, seq_len, und_dim]
+        und_k_lens = self._build_und_k_lens(vlm_inputs, und_tokens)
         # print("und_k_lens:",und_k_lens)
         # logger.info("llm_loss", llm_loss)
 
         # Time embeddings
         # Use scheduler-provided timesteps (0..num_train_timesteps) for WAN/action time embeddings
         video_head_time_emb, video_adaln_params  = self.video_module.get_time_embedding(video_t_embed, video_tokens.shape[1])
-        if has_actions:
-            action_head_time_emb, action_adaln_params = self.action_module.get_time_embedding(action_t_embed, action_tokens.shape[1])
-        else:
-            action_head_time_emb = None
-            action_adaln_params = None
+        action_head_time_emb, action_adaln_params = self.action_module.get_time_embedding(action_t_embed, action_tokens.shape[1])
 
         # T5 preprocess
         processed_t5_context = self.video_module.preprocess_t5_embeddings(language_embeddings)
@@ -1028,45 +947,34 @@ class Motus(nn.Module):
             for layer_idx in range(self.config.num_layers):
                 # Compute AdaLN modulation once per layer using pre-computed parameters
                 video_adaln_modulation = self.video_module.compute_adaln_modulation(video_adaln_params, layer_idx)
-                action_adaln_modulation = (
-                    self.action_module.compute_adaln_modulation(action_adaln_params, layer_idx)
-                    if has_actions
-                    else None
+                action_adaln_modulation = self.action_module.compute_adaln_modulation(action_adaln_params, layer_idx)
+                
+                # Trimodal MoT: WAN + Action + Understanding Expert joint attention
+                video_tokens, action_tokens, und_tokens = self.video_module.process_joint_attention(
+                    video_tokens, action_tokens, video_adaln_modulation, action_adaln_modulation, layer_idx, 
+                    self.action_expert.blocks[layer_idx],
+                    und_tokens, self.und_expert.blocks[layer_idx],
+                    und_k_lens=und_k_lens
                 )
-
-                if has_actions:
-                    video_tokens, action_tokens, und_tokens = self.video_module.process_joint_attention(
-                        video_tokens, action_tokens, video_adaln_modulation, action_adaln_modulation, layer_idx,
-                        self.action_expert.blocks[layer_idx],
-                        und_tokens,
-                        self.und_expert.blocks[layer_idx],
-                        und_k_lens=und_k_lens,
-                    )
-                elif und_tokens is not None:
-                    video_tokens, und_tokens = self.video_module.process_video_und_attention(
-                        video_tokens,
-                        video_adaln_modulation,
-                        layer_idx,
-                        und_tokens,
-                        self.und_expert.blocks[layer_idx],
-                        und_k_lens=und_k_lens,
-                    )
-                else:
-                    video_tokens = self.video_module.process_video_attention(video_tokens, video_adaln_modulation, layer_idx)
 
                 # WAN cross
                 video_tokens = self.video_module.process_cross_attention(video_tokens, video_adaln_params, layer_idx, processed_t5_context)
 
                 # FFNs: WAN, Action, Understanding (each processes their own FFN)
                 video_tokens = self.video_module.process_ffn(video_tokens, video_adaln_modulation, layer_idx)
-                if has_actions:
-                    action_tokens = self.action_module.process_ffn(action_tokens, action_adaln_modulation, layer_idx)
-                if und_tokens is not None:
-                    und_tokens = self.und_module.process_ffn(und_tokens, layer_idx)
+                action_tokens = self.action_module.process_ffn(action_tokens, action_adaln_modulation, layer_idx)
+                und_tokens = self.und_module.process_ffn(und_tokens, layer_idx)
                 
         
             # 4. Heads + Losses
             video_pred = self.video_module.apply_output_head(video_tokens, video_head_time_emb)
+            action_pred_full = self.action_expert.decoder(action_tokens, action_head_time_emb)
+            up_len = action_pred_full.shape[1] - self.action_expert.config.num_registers
+            # Slice predicted actions depending on mode
+            if self.config.training_mode == 'pretrain':
+                action_pred = action_pred_full[:, :up_len, :]
+            else:
+                action_pred = action_pred_full[:, 1:up_len, :]
 
             # Video loss (mask the first frame)
             video_pred_masked = video_pred.clone()
@@ -1074,25 +982,16 @@ class Motus(nn.Module):
             video_loss = torch.nn.functional.mse_loss(video_pred_masked, video_target, reduction='mean')
         
             # Action loss
-            if has_actions:
-                action_pred_full = self.action_expert.decoder(action_tokens, action_head_time_emb)
-                up_len = action_pred_full.shape[1] - self.action_expert.config.num_registers
-                if self.config.training_mode == 'pretrain':
-                    action_pred = action_pred_full[:, :up_len, :]
-                else:
-                    action_pred = action_pred_full[:, 1:up_len, :]
-                if action_mask_float is not None:
-                    action_loss_mask = action_mask_float[:, :action_pred.shape[1], :].to(action_pred.dtype)
-                    action_loss_raw = torch.nn.functional.mse_loss(action_pred, action_target, reduction='none')
-                    action_loss = (action_loss_raw * action_loss_mask).sum() / action_loss_mask.sum().clamp(min=1.0)
-                else:
-                    action_loss = torch.nn.functional.mse_loss(action_pred, action_target, reduction='mean')
+            if action_mask_float is not None:
+                action_loss_mask = action_mask_float[:, :action_pred.shape[1], :].to(action_pred.dtype)
+                action_loss_raw = torch.nn.functional.mse_loss(action_pred, action_target, reduction='none')
+                action_loss = (action_loss_raw * action_loss_mask).sum() / action_loss_mask.sum().clamp(min=1.0)
             else:
-                action_loss = video_loss.new_tensor(0.0)
+                action_loss = torch.nn.functional.mse_loss(action_pred, action_target, reduction='mean')
 
         total_loss = (
             self.config.video_loss_weight * video_loss +
-            (self.config.action_loss_weight * action_loss if has_actions else 0.0)
+            self.config.action_loss_weight * action_loss
         )
         if llm_loss is not None:
             total_loss += llm_loss
@@ -1105,8 +1004,7 @@ class Motus(nn.Module):
                 'action_loss': action_loss,
                 'llm_loss': llm_loss,
                 'video_timestep_mean': sigma.float().mean().item(),
-                'action_timestep_mean': sigma_action.float().mean().item() if sigma_action is not None else None,
-                'has_actions': has_actions,
+                'action_timestep_mean': sigma_action.float().mean().item(),
             }
 
     def inference_step(
@@ -1132,11 +1030,9 @@ class Motus(nn.Module):
             Tuple of (predicted_frames, predicted_actions)
         """
         B = first_frame.shape[0]
-        has_actions = state is not None
 
         language_embeddings = [emb.to(self.device).to(self.dtype) for emb in language_embeddings]
-        if state is not None:
-            state = state.to(self.device).to(self.dtype)
+        state = state.to(self.device).to(self.dtype)
         first_frame = first_frame.to(self.device).to(self.dtype)
 
         # 1. Video/Action latents init
@@ -1150,20 +1046,14 @@ class Motus(nn.Module):
         num_total_latent_frames = 1 + self.config.num_video_frames // 4
         video_latent = torch.randn((B, C_latent, num_total_latent_frames, H_latent, W_latent), device=self.device, dtype=self.dtype)
         video_latent[:, :, 0:1] = condition_frame_latent
-        if has_actions:
-            action_shape = (B, self.config.action_chunk_size, self.config.action_dim)
-            action_latent = torch.randn(action_shape, device=self.device, dtype=self.dtype)
-        else:
-            action_latent = None
+        action_shape = (B, self.config.action_chunk_size, self.config.action_dim)
+        action_latent = torch.randn(action_shape, device=self.device, dtype=self.dtype)
 
         # 2. Understanding Expert features and T5 context
         # Extract understanding features from VLM
-        if vlm_inputs is not None:
-            und_tokens = self.und_module.extract_und_features(vlm_inputs)
-            if isinstance(und_tokens, tuple):
-                und_tokens = und_tokens[0]
-        else:
-            und_tokens = None
+        und_tokens = self.und_module.extract_und_features(vlm_inputs)
+        if isinstance(und_tokens, tuple):
+            und_tokens = und_tokens[0]
 
 
         # T5 preprocess
@@ -1181,62 +1071,37 @@ class Motus(nn.Module):
 
             # Tokens with Registers
             video_tokens = self.video_module.prepare_input(video_latent.to(self.dtype))
-            if has_actions:
-                state_tokens = state.unsqueeze(1).to(self.dtype)
-                registers = self.action_expert.registers.expand(B, -1, -1)  # [B, num_registers, dim]
-                action_tokens = self.action_expert.input_encoder(state_tokens, action_latent, registers)
-            else:
-                action_tokens = None
+            state_tokens = state.unsqueeze(1).to(self.dtype)
+            # Expand registers for batch
+            registers = self.action_expert.registers.expand(B, -1, -1)  # [B, num_registers, dim]
+            action_tokens = self.action_expert.input_encoder(state_tokens, action_latent, registers)
 
             # Note: Understanding tokens already extracted before the loop, will be updated in joint attention
-            if vlm_inputs is not None:
-                und_tokens = self.und_module.extract_und_features(vlm_inputs)  # [B, num_queries * num_layers, und_dim]
-                if isinstance(und_tokens, tuple):
-                    und_tokens = und_tokens[0]
-                und_k_lens = self._build_und_k_lens(vlm_inputs, und_tokens)
-            else:
-                und_k_lens = None
+            und_tokens = self.und_module.extract_und_features(vlm_inputs)  # [B, num_queries * num_layers, und_dim]
+            if isinstance(und_tokens, tuple):
+                und_tokens = und_tokens[0]
+            und_k_lens = self._build_und_k_lens(vlm_inputs, und_tokens)
 
             
             # Trimodal MoT forward - joint denoising for WAN, Action, Understanding
             with torch.autocast(device_type="cuda", dtype=self.video_model.precision):
                 # Time embeddings
                 video_head_time_emb, video_adaln_params = self.video_module.get_time_embedding(video_t_scaled, video_tokens.shape[1])
-                if has_actions:
-                    action_head_time_emb, action_adaln_params = self.action_module.get_time_embedding(action_t_scaled, action_tokens.shape[1])
-                else:
-                    action_head_time_emb = None
-                    action_adaln_params = None
+                action_head_time_emb, action_adaln_params = self.action_module.get_time_embedding(action_t_scaled, action_tokens.shape[1])
 
                 # Process through all layers - trimodal denoising of WAN, Action, Understanding
                 for layer_idx in range(self.config.num_layers):
                     # Compute AdaLN modulation using pre-computed parameters
                     video_adaln_modulation = self.video_module.compute_adaln_modulation(video_adaln_params, layer_idx)
-                    action_adaln_modulation = (
-                        self.action_module.compute_adaln_modulation(action_adaln_params, layer_idx)
-                        if has_actions
-                        else None
+                    action_adaln_modulation = self.action_module.compute_adaln_modulation(action_adaln_params, layer_idx)
+                    
+                    # Trimodal joint attention: WAN + Action + Understanding
+                    video_tokens, action_tokens, und_tokens = self.video_module.process_joint_attention(
+                        video_tokens, action_tokens, video_adaln_modulation, action_adaln_modulation, layer_idx, 
+                        self.action_expert.blocks[layer_idx],
+                        und_tokens, self.und_expert.blocks[layer_idx],
+                        und_k_lens=und_k_lens
                     )
-
-                    if has_actions:
-                        video_tokens, action_tokens, und_tokens = self.video_module.process_joint_attention(
-                            video_tokens, action_tokens, video_adaln_modulation, action_adaln_modulation, layer_idx,
-                            self.action_expert.blocks[layer_idx],
-                            und_tokens,
-                            self.und_expert.blocks[layer_idx],
-                            und_k_lens=und_k_lens,
-                        )
-                    elif und_tokens is not None:
-                        video_tokens, und_tokens = self.video_module.process_video_und_attention(
-                            video_tokens,
-                            video_adaln_modulation,
-                            layer_idx,
-                            und_tokens,
-                            self.und_expert.blocks[layer_idx],
-                            und_k_lens=und_k_lens,
-                        )
-                    else:
-                        video_tokens = self.video_module.process_video_attention(video_tokens, video_adaln_modulation, layer_idx)
 
                     # WAN cross-attention with T5 embeddings 
                     video_tokens = self.video_module.process_cross_attention(
@@ -1245,21 +1110,19 @@ class Motus(nn.Module):
 
                     # FFNs: WAN, Action, Understanding
                     video_tokens = self.video_module.process_ffn(video_tokens, video_adaln_modulation, layer_idx)
-                    if has_actions:
-                        action_tokens = self.action_module.process_ffn(action_tokens, action_adaln_modulation, layer_idx)
-                    if und_tokens is not None:
-                        und_tokens = self.und_module.process_ffn(und_tokens, layer_idx)
+                    action_tokens = self.action_module.process_ffn(action_tokens, action_adaln_modulation, layer_idx)
+                    und_tokens = self.und_module.process_ffn(und_tokens, layer_idx)
 
                 # Heads (velocities)
                 video_velocity = self.video_module.apply_output_head(video_tokens, video_head_time_emb)
-                if has_actions:
-                    action_pred_full = self.action_expert.decoder(action_tokens, action_head_time_emb)
-                    action_velocity = action_pred_full[:, 1:-self.action_expert.config.num_registers, :]
+                # Use decoder with all tokens (including registers)
+                action_pred_full = self.action_expert.decoder(action_tokens, action_head_time_emb)
+                # Extract middle action chunk (skip first state token and last register tokens)
+                action_velocity = action_pred_full[:, 1:-self.action_expert.config.num_registers, :]
 
                 # Euler integration
                 video_latent = video_latent + video_velocity * dt
-                if has_actions:
-                    action_latent = action_latent + action_velocity * dt
+                action_latent = action_latent + action_velocity * dt
 
                 # Teacher Forcing
                 video_latent[:, :, 0:1] = condition_frame_latent
@@ -1271,7 +1134,7 @@ class Motus(nn.Module):
             predicted_frames = (predicted_frames + 1.0) / 2.0  # [-1,1] to [0,1]
             predicted_frames = torch.clamp(predicted_frames, 0, 1).float()
         
-        predicted_actions = action_latent.float() if action_latent is not None else None
+        predicted_actions = action_latent.float()  # [B, action_chunk_size, 14]
 
         return predicted_frames, predicted_actions
 

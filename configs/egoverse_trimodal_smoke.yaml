@@ -8,10 +8,11 @@ common:
   video_action_freq_ratio: 1
 
 dataset:
-  type: "egoverse_vgm"
+  type: "egoverse_trimodal"
   train_manifest: "dataset/human_data/egoverse_vgm/manifests/train.jsonl"
   val_manifest: "dataset/human_data/egoverse_vgm/manifests/val.jsonl"
-  max_samples: 2000
+  action_mode: "zeros"
+  max_samples: 100
   image_aug: false
   seed: 0
 
@@ -64,14 +65,14 @@ model:
     max_value: 0.9999
 
 training:
-  video_only: true
+  video_only: false
   batch_size: 1
-  max_steps: 100
+  max_steps: 20
   learning_rate: 5.0e-5
   weight_decay: 0.01
   scheduler_type: "diffusers_cosine"
-  warmup_steps: 10
-  lr_schedule_steps: 100
+  warmup_steps: 5
+  lr_schedule_steps: 20
   min_lr: 1.0e-5
   grad_clip_norm: 0.5
   use_amp: true
@@ -80,10 +81,15 @@ training:
 system:
   checkpoint_dir: "./checkpoints"
   log_level: "INFO"
-  log_interval: 1
-  save_interval: 100
-  val_interval: 50
-  num_workers: 2
+  # Keep Motus train/train.py identical to the reference commit. Its original
+  # logger formats llm_loss whenever the key exists, even when it is None, so
+  # human-video smoke avoids per-step logging and relies on eval/checkpoint logs.
+  log_interval: 1000
+  save_interval: 20
+  # Reference pretrain-mode inference assumes registers even though pretrain
+  # creates none, so this smoke validates the train path and checkpoint save.
+  val_interval: 1000
+  num_workers: 0
   pin_memory: true
 
 logging:
@@ -95,4 +101,3 @@ logging:
 resume:
   checkpoint_path: null
   reset_scheduler: false
-

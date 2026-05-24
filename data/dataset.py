@@ -267,18 +267,20 @@ def _create_single_dataset(config: OmegaConf, val: bool = False):
 
         return LatentActionDataset(**params)
 
-    elif dataset_type == 'egoverse_vgm':
-        from .egoverse.egoverse_vgm_dataset import EgoVerseVgmDataset
+    elif dataset_type == 'egoverse_trimodal':
+        from .egoverse.egoverse_vgm_dataset import EgoVerseTrimodalDataset
 
         params = {}
         if hasattr(config, 'common'):
             params.update({
                 'global_downsample_rate': config.common.global_downsample_rate,
+                'video_action_freq_ratio': config.common.video_action_freq_ratio,
                 'num_video_frames': config.common.num_video_frames,
+                'action_dim': config.common.action_dim,
                 'video_size': (config.common.video_height, config.common.video_width),
             })
 
-        for key in ['train_manifest', 'val_manifest', 'manifest', 'max_samples', 'seed']:
+        for key in ['train_manifest', 'val_manifest', 'manifest', 'max_samples', 'seed', 'action_mode']:
             if hasattr(config.dataset, key):
                 params[key] = getattr(config.dataset, key)
         if hasattr(config.dataset, 'image_aug'):
@@ -289,7 +291,7 @@ def _create_single_dataset(config: OmegaConf, val: bool = False):
             params.update(OmegaConf.to_object(config.dataset.params))
         params['val'] = val
 
-        return EgoVerseVgmDataset(**params)
+        return EgoVerseTrimodalDataset(**params)
 
     elif dataset_type == 'aloha_agilex_2':
         from .aloha_agilex_2.aloha_agilex2_dataset import AlohaAgilex2Dataset
