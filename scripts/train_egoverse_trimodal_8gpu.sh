@@ -11,8 +11,14 @@ MASTER_PORT="${MASTER_PORT:-29531}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
 DEEPSPEED_CONFIG="${DEEPSPEED_CONFIG:-configs/zero2.json}"
 RUN_NAME="${RUN_NAME:-${TASK}_partial23k}"
+REPORT_TO="${REPORT_TO:-all}"
+WANDB_PROJECT="${WANDB_PROJECT:-d0_egoverse_pretrain}"
 
 mkdir -p "${OUTPUT_DIR}"
+mkdir -p "${OUTPUT_DIR}/wandb"
+
+export WANDB_MODE="${WANDB_MODE:-offline}"
+export WANDB_DIR="${WANDB_DIR:-${OUTPUT_DIR}/wandb}"
 
 echo "Task: ${TASK}"
 echo "Config: ${CONFIG_FILE}"
@@ -20,6 +26,7 @@ echo "Output: ${OUTPUT_DIR}"
 echo "GPUs: ${NPROC_PER_NODE}"
 echo "DeepSpeed: ${DEEPSPEED_CONFIG}"
 echo "Run name: ${RUN_NAME}"
+echo "Logging: ${REPORT_TO} (WANDB_MODE=${WANDB_MODE}, WANDB_DIR=${WANDB_DIR})"
 
 torchrun \
   --nnodes=1 \
@@ -31,5 +38,6 @@ torchrun \
   --deepspeed "${DEEPSPEED_CONFIG}" \
   --config "${CONFIG_FILE}" \
   --run_name "${RUN_NAME}" \
-  --report_to tensorboard \
+  --report_to "${REPORT_TO}" \
+  --wandb_project "${WANDB_PROJECT}" \
   > "${OUTPUT_DIR}/train_${TASK}.log" 2>&1

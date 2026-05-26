@@ -90,8 +90,8 @@ system:
   pin_memory: true
 
 logging:
-  report_to: "tensorboard"
-  wandb_project: "motus"
+  report_to: "all"
+  wandb_project: "d0_egoverse_pretrain"
   tensorboard_log_dir: "tensorboard_logs"
   run_name: null
 

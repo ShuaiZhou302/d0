@@ -22,5 +22,9 @@ export MASTER_PORT="${MASTER_PORT:-29531}"
 export NPROC_PER_NODE="${NPROC_PER_NODE:-8}"
 export DEEPSPEED_CONFIG="${DEEPSPEED_CONFIG:-configs/zero2.json}"
 export RUN_NAME="${RUN_NAME:-${TASK}_partial23k_${SLURM_JOB_ID}}"
+export REPORT_TO="${REPORT_TO:-all}"
+export WANDB_PROJECT="${WANDB_PROJECT:-d0_egoverse_pretrain}"
+export WANDB_MODE="${WANDB_MODE:-offline}"
+export WANDB_DIR="${WANDB_DIR:-${OUTPUT_DIR}/wandb}"
 
 bash scripts/train_egoverse_trimodal_8gpu.sh
