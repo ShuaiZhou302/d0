@@ -506,6 +506,7 @@ def create_model_and_optimizer(config: OmegaConf) -> tuple:
         action_expert_dim=config.model.action_expert.hidden_size,
         action_expert_ffn_dim_multiplier=config.model.action_expert.ffn_dim_multiplier,
         action_expert_norm_eps=config.model.action_expert.norm_eps,
+        action_expert_frozen=bool(getattr(config.model.action_expert, 'frozen', False)),
         # Understanding Expert configuration from config file
         und_expert_hidden_size=config.model.und_expert.hidden_size,
         und_expert_ffn_dim_multiplier=config.model.und_expert.ffn_dim_multiplier,

@@ -56,6 +56,7 @@ class MotusConfig:
     action_expert_dim: int = 1024           # Configurable hidden dimension
     action_expert_ffn_dim_multiplier: int = 4  # FFN dimension multiplier
     action_expert_norm_eps: float = 1e-6    # Layer norm epsilon for Action Expert
+    action_expert_frozen: bool = False      # Freeze Action Expert parameters while keeping it in the forward graph
 
     # Sampling settings
     global_downsample_rate: int = 3     # Global downsampling rate
@@ -639,6 +640,7 @@ class Motus(nn.Module):
         # Set time embedding layers to float32 for numerical stability
         self.action_expert.time_embedding.to(dtype=torch.float32)
         self.action_expert.time_projection.to(dtype=torch.float32)
+        self._configure_action_expert_trainability()
 
         # Pre-compute grid_sizes for training batch size
         lat_T = 1 + config.num_video_frames // 4
@@ -709,6 +711,17 @@ class Motus(nn.Module):
                 param.requires_grad = True
             logger.info("VLM parameters unfrozen")
 
+    def _configure_action_expert_trainability(self) -> None:
+        """Configure Action Expert trainability without removing it from trimodal attention."""
+        if self.config.action_expert_frozen:
+            for param in self.action_expert.parameters():
+                param.requires_grad = False
+            logger.info("Action Expert parameters frozen")
+        else:
+            for param in self.action_expert.parameters():
+                param.requires_grad = True
+            logger.info("Action Expert parameters trainable")
+
     def _build_und_k_lens(self, vlm_inputs: Any, und_tokens: torch.Tensor) -> Optional[torch.Tensor]:
         """Build per-sample K/V visible lengths for Understanding tokens from answer_start."""
         if not isinstance(vlm_inputs, dict):
@@ -749,6 +762,7 @@ class Motus(nn.Module):
 
         video_params = sum(p.numel() for p in self.video_model.parameters())
         action_params = sum(p.numel() for p in self.action_expert.parameters())
+        action_trainable_params = sum(p.numel() for p in self.action_expert.parameters() if p.requires_grad)
         vlm_params = sum(p.numel() for p in self.vlm_model.parameters())
         vlm_trainable_params = sum(p.numel() for p in self.vlm_model.parameters() if p.requires_grad)
         und_params = sum(p.numel() for p in self.und_expert.parameters())
@@ -757,7 +771,7 @@ class Motus(nn.Module):
         logger.info(f"  Total parameters: {total_params / 1e9:.2f}B")
         logger.info(f"  Trainable parameters: {trainable_params / 1e9:.2f}B")
         logger.info(f"  Video Model (WAN): {video_params / 1e9:.2f}B")
-        logger.info(f"  Action Expert: {action_params / 1e6:.1f}M")
+        logger.info(f"  Action Expert: {action_params / 1e6:.1f}M (trainable {action_trainable_params / 1e6:.1f}M)")
         if self.config.vlm_frozen:
             vlm_mode = "VLM (frozen)"
         else:
