@@ -130,33 +130,44 @@ class EgoVerseTrimodalDataset(data.Dataset):
             raise ValueError(f"Expected UMT5 embedding [S,D], got {type(embedding)} {getattr(embedding, 'shape', None)} at {path}")
         return embedding.float(), selected_idx
 
-    def __getitem__(self, idx: int) -> Optional[dict[str, Any]]:
-        if not self.rows:
-            return None
-        row = self.rows[idx % len(self.rows)]
-        try:
-            condition_idx, video_indices = self._select_indices(row, idx)
-            frame_indices = [condition_idx] + video_indices
-            frames = load_video_frames(row["video_path"], frame_indices, self.video_size)
-            first_frame = frames[0]
-            video_frames = frames[1:]
-            language_embedding, _ = self._load_language_embedding(row["umt5_path"])
+    def __getitem__(self, idx: int) -> dict[str, Any]:
+        max_attempts = min(16, len(self.rows))
+        last_error: Exception | None = None
+        for attempt in range(max_attempts):
+            row = self.rows[(idx + attempt) % len(self.rows)]
+            try:
+                return self._load_sample(row, idx + attempt)
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                logger.warning(
+                    "Error loading EgoVerse sample %s on attempt %d/%d: %s",
+                    row.get("id", "unknown"),
+                    attempt + 1,
+                    max_attempts,
+                    exc,
+                )
+        raise RuntimeError(f"Failed to load EgoVerse sample after {max_attempts} attempts") from last_error
 
-            vlm_inputs = None
-            if self.vlm_processor is not None:
-                first_frame_pil = tensor_to_pil(first_frame)
-                vlm_inputs = preprocess_vlm_messages(row["instruction"], first_frame_pil, self.vlm_processor)
+    def _load_sample(self, row: dict[str, Any], idx: int) -> dict[str, Any]:
+        condition_idx, video_indices = self._select_indices(row, idx)
+        frame_indices = [condition_idx] + video_indices
+        frames = load_video_frames(row["video_path"], frame_indices, self.video_size)
+        first_frame = frames[0]
+        video_frames = frames[1:]
+        language_embedding, _ = self._load_language_embedding(row["umt5_path"])
 
-            sample = {
-                "first_frame": first_frame,
-                "video_frames": video_frames,
-                "language_embedding": language_embedding,
-                "vlm_inputs": vlm_inputs,
-            }
-            if self.action_mode == "zeros":
-                action_sequence = torch.zeros(self.action_chunk_size, self.action_dim, dtype=torch.float32)
-                sample["action_sequence"] = action_sequence
-            return sample
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Error loading EgoVerse sample %s: %s", row.get("id", "unknown"), exc)
-            return None
+        vlm_inputs = None
+        if self.vlm_processor is not None:
+            first_frame_pil = tensor_to_pil(first_frame)
+            vlm_inputs = preprocess_vlm_messages(row["instruction"], first_frame_pil, self.vlm_processor)
+
+        sample = {
+            "first_frame": first_frame,
+            "video_frames": video_frames,
+            "language_embedding": language_embedding,
+            "vlm_inputs": vlm_inputs,
+        }
+        if self.action_mode == "zeros":
+            action_sequence = torch.zeros(self.action_chunk_size, self.action_dim, dtype=torch.float32)
+            sample["action_sequence"] = action_sequence
+        return sample

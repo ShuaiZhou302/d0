@@ -104,6 +104,14 @@ class VideoModule(nn.Module):
         self.device = device
         self.grid_sizes = grid_sizes
 
+    def grid_sizes_for_batch(self, batch_size: int) -> torch.Tensor:
+        """Return WAN grid sizes matching the actual runtime batch size."""
+        if self.grid_sizes.shape[0] == batch_size:
+            return self.grid_sizes
+        if self.grid_sizes.shape[0] > batch_size:
+            return self.grid_sizes[:batch_size]
+        return self.grid_sizes[:1].expand(batch_size, -1)
+
     def prepare_input(self, noisy_video_latent: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Prepare video tokens from pre-processed noisy latent."""
         # Through patch_embedding: 48 -> 3072 channels
@@ -203,7 +211,7 @@ class VideoModule(nn.Module):
     def apply_output_head(self, video_tokens: torch.Tensor, video_time_emb: torch.Tensor) -> torch.Tensor:
         """Apply WAN's head + unpatchify for final video output."""
         x = self.video_model.wan_model.head(video_tokens, video_time_emb)
-        x = self.video_model.wan_model.unpatchify(x, self.grid_sizes)
+        x = self.video_model.wan_model.unpatchify(x, self.grid_sizes_for_batch(video_tokens.shape[0]))
         return torch.stack([u.float() for u in x], dim=0)
 
     def process_joint_attention(
@@ -268,7 +276,7 @@ class VideoModule(nn.Module):
 
         # Call WAN self-attn with trimodal MoT
         y, action_out_h, und_out_h = wan_layer.self_attn(
-            norm_video, seq_lens, self.grid_sizes, freqs,
+            norm_video, seq_lens, self.grid_sizes_for_batch(B), freqs,
             action_q=a_q, action_k=a_k, action_v=a_v,
             und_q=u_q, und_k=u_k, und_v=u_v
         )
