@@ -10,6 +10,7 @@ CUDA_DEVICES_FOR_T5="${CUDA_DEVICES_FOR_T5:-0,1,2,3,4,5,6,7}"
 MAX_VIDEOS="${MAX_VIDEOS:-0}"
 
 cd "${D0_ROOT}"
+export PYTHONPATH="${D0_ROOT}:${PYTHONPATH:-}"
 
 python data/egoverse/build_egoverse_vgm_manifest.py \
   --raw-root dataset/human_data/egoverse_raw/EgoVerse \
