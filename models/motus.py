@@ -808,25 +808,17 @@ class Motus(nn.Module):
                           if k not in ['module', 'config']}
         return additional_state
 
-    def load_pretrain_weights(self, path: str) -> None:
-        """Load weights from a pretrain checkpoint when current mode is finetune.
-
-        Skips layers that depend on state vs action-only differences:
-          - action_expert.input_encoder.*
-          - action_expert.decoder.*
-        """
-        if self.config.training_mode != 'finetune':
-            raise ValueError("load_pretrain_weights should be called only in finetune mode")
-        
-        # Handle directory path - try two possible locations
+    @staticmethod
+    def _resolve_checkpoint_file(path: str) -> str:
+        """Resolve a Motus/Accelerate checkpoint path to a torch-loadable file."""
         checkpoint_path = Path(path)
         if checkpoint_path.is_dir():
-            # Try two possible paths
             possible_paths = [
                 checkpoint_path / "pytorch_model" / "mp_rank_00_model_states.pt",
-                checkpoint_path / "mp_rank_00_model_states.pt",                   
+                checkpoint_path / "mp_rank_00_model_states.pt",
+                checkpoint_path / "pytorch_model_0.bin",
             ]
-            
+
             checkpoint_file = None
             for p in possible_paths:
                 if p.exists():
@@ -840,23 +832,71 @@ class Motus(nn.Module):
                     f"  - {possible_paths[0]}\n"
                     f"  - {possible_paths[1]}"
                 )
-            path = str(checkpoint_file)
+            return str(checkpoint_file)
         else:
             if not checkpoint_path.exists():
                 raise FileNotFoundError(f"Checkpoint file not found: {checkpoint_path}")
+            return str(checkpoint_path)
 
-        logger.info(f"Loading pretrain weights from {path}")
+    def load_filtered_weights(self, path: str, *, tag: str = "checkpoint", skip_action_io: bool = True) -> None:
+        """Load shape-compatible weights while skipping embodiment-specific action I/O.
+
+        This is used both for robot finetuning and for continued human-video
+        pretraining from an existing Motus checkpoint. The action input encoder
+        and decoder are intentionally skipped because their state/action
+        interface changes across embodiments or human-video placeholders.
+        """
+        path = self._resolve_checkpoint_file(path)
+
+        logger.info(f"Loading {tag} weights from {path}")
         checkpoint = torch.load(path, map_location='cpu')
         state_dict = checkpoint.get('module', checkpoint)
         
+        current_state = self.state_dict()
         filtered = {}
+        skipped_shape = []
+        skipped_action_io = []
         for k, v in state_dict.items():
-            if ('action_expert.input_encoder' in k or 'action_expert.decoder' in k):
+            if skip_action_io and ('action_expert.input_encoder' in k or 'action_expert.decoder' in k):
+                skipped_action_io.append(k)
+                continue
+            if k in current_state and tuple(current_state[k].shape) != tuple(v.shape):
+                skipped_shape.append((k, tuple(v.shape), tuple(current_state[k].shape)))
                 continue
             filtered[k] = v
         
         missing, unexpected = self.load_state_dict(filtered, strict=False)
-        logger.info(f"Loaded pretrain weights (filtered). Missing: {len(missing)}, Unexpected: {len(unexpected)}")
+        logger.info(f"Loaded {tag} weights (filtered). Missing: {len(missing)}, Unexpected: {len(unexpected)}")
+        loaded_vlm_keys = sum(1 for k in filtered if k.startswith("vlm_model."))
+        logger.info(
+            "Loaded key counts: video_model=%d video_module=%d action_expert=%d und_expert=%d vlm_model=%d",
+            sum(1 for k in filtered if k.startswith("video_model.")),
+            sum(1 for k in filtered if k.startswith("video_module.")),
+            sum(1 for k in filtered if k.startswith("action_expert.")),
+            sum(1 for k in filtered if k.startswith("und_expert.")),
+            loaded_vlm_keys,
+        )
+        if loaded_vlm_keys == 0:
+            raise RuntimeError(
+                f"Loaded 0 vlm_model.* tensors from {tag} checkpoint. "
+                "Refusing to continue with randomly initialized VLM weights."
+            )
+        if skipped_action_io:
+            logger.info("Skipped %d action I/O tensors while loading %s weights", len(skipped_action_io), tag)
+        if skipped_shape:
+            logger.info("Skipped %d shape-mismatched tensors while loading %s weights", len(skipped_shape), tag)
+            for name, src_shape, dst_shape in skipped_shape[:20]:
+                logger.info("  shape mismatch: %s checkpoint=%s current=%s", name, src_shape, dst_shape)
+
+    def load_pretrain_weights(self, path: str) -> None:
+        """Load pretraining weights for downstream finetuning."""
+        if self.config.training_mode != 'finetune':
+            raise ValueError("load_pretrain_weights should be called only in finetune mode")
+        self.load_filtered_weights(path, tag="finetune-init", skip_action_io=True)
+
+    def load_continued_pretrain_weights(self, path: str) -> None:
+        """Initialize continued pretraining from an existing Motus checkpoint."""
+        self.load_filtered_weights(path, tag="continued-pretrain-init", skip_action_io=False)
 
     def training_step(
         self,

@@ -33,9 +33,14 @@ python /share/home/lht/Motus/data/lerobot/add_t5_cache_to_lerobot_dataset.py \
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib
+import importlib.machinery
 import json
 import os
+import re
 import sys
+import types
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -63,6 +68,9 @@ def _write_jsonlines_atomic(path: Path, rows: List[Dict[str, Any]]) -> None:
 
 
 def _resolve_dataset_root(repo_id: str, root: Optional[str]) -> Path:
+    if root is not None:
+        return Path(root)
+
     # Use LeRobot metadata to resolve default cache dir if root is not provided.
     from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
 
@@ -82,11 +90,26 @@ def _init_wan_t5_encoder(
     try:
         from Motus.bak.wan.modules.t5 import T5EncoderModel  # type: ignore
     except Exception:
-        # Fallback: add bak path similarly to inference scripts
-        bak_root = str((Path(__file__).resolve().parents[2] / "bak").resolve())
-        if bak_root not in sys.path:
-            sys.path.insert(0, bak_root)
-        from wan.modules.t5 import T5EncoderModel  # type: ignore
+        # Fallback: expose only bak/wan/modules as a lightweight package.
+        # Importing wan normally executes wan/__init__.py and pulls optional
+        # config dependencies that are irrelevant for T5-only preprocessing.
+        wan_root = (Path(__file__).resolve().parents[2] / "bak" / "wan").resolve()
+        modules_root = wan_root / "modules"
+        wan_pkg = sys.modules.get("wan") or types.ModuleType("wan")
+        wan_pkg.__path__ = [str(wan_root)]  # type: ignore[attr-defined]
+        sys.modules["wan"] = wan_pkg
+        modules_pkg = sys.modules.get("wan.modules") or types.ModuleType("wan.modules")
+        modules_pkg.__path__ = [str(modules_root)]  # type: ignore[attr-defined]
+        sys.modules["wan.modules"] = modules_pkg
+        if "ftfy" not in sys.modules:
+            try:
+                importlib.import_module("ftfy")
+            except ModuleNotFoundError:
+                ftfy_stub = types.ModuleType("ftfy")
+                ftfy_stub.__spec__ = importlib.machinery.ModuleSpec("ftfy", loader=None)
+                ftfy_stub.fix_text = lambda text: text  # type: ignore[attr-defined]
+                sys.modules["ftfy"] = ftfy_stub
+        T5EncoderModel = importlib.import_module("wan.modules.t5").T5EncoderModel  # type: ignore
 
     ckpt = os.path.join(wan_path, "Wan2.2-TI2V-5B", "models_t5_umt5-xxl-enc-bf16.pth")
     tok = os.path.join(wan_path, "Wan2.2-TI2V-5B", "google/umt5-xxl")
@@ -133,6 +156,16 @@ def _episode_instruction_from_meta(ep_row: Dict[str, Any]) -> str:
     return str(task)
 
 
+def _shared_t5_relpath(instruction: str, folder_name: str) -> str:
+    """Stable shared cache path for all episodes with the same instruction."""
+    normalized = " ".join(str(instruction).strip().split())
+    digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:12]
+    slug = re.sub(r"[^A-Za-z0-9]+", "_", normalized.lower()).strip("_")[:80]
+    if not slug:
+        slug = "empty_instruction"
+    return f"{folder_name}/shared/{slug}_{digest}.pt"
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Add WAN T5 embedding cache to a LeRobot dataset (episode-level pt + episodes.jsonl pointer)"
@@ -154,6 +187,11 @@ def main():
     parser.add_argument("--text_len", type=int, default=512, help="T5 text_len (default: 512)")
     parser.add_argument("--t5_folder_name", type=str, default="t5_embedding", help="Cache folder name under dataset root")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing .pt files and meta pointers")
+    parser.add_argument(
+        "--share_by_instruction",
+        action="store_true",
+        help="Store one T5 embedding per unique instruction and point all matching episodes to it.",
+    )
     parser.add_argument("--max_episodes", type=int, default=0, help="Process at most N episodes (0 = all)")
     parser.add_argument(
         "--strip_parquet_metadata",
@@ -185,7 +223,11 @@ def main():
 
     for ep in episodes:
         ep_idx = int(ep["episode_index"])
-        rel = f"{args.t5_folder_name}/episode_{ep_idx:06d}.pt"
+        instr = _episode_instruction_from_meta(ep)
+        if args.share_by_instruction:
+            rel = _shared_t5_relpath(instr, args.t5_folder_name)
+        else:
+            rel = f"{args.t5_folder_name}/episode_{ep_idx:06d}.pt"
         abs_pt = dataset_root / rel
 
         has_ptr = ("t5_embedding_path" in ep) and isinstance(ep.get("t5_embedding_path"), str)
@@ -201,12 +243,12 @@ def main():
                     skipped += 1
                 continue
 
-        instr = _episode_instruction_from_meta(ep)
         if encoder is None:
             print(f"Loading WAN T5 encoder from {wan_path} on {device} ...")
             encoder = _init_wan_t5_encoder(wan_path=wan_path, device=device, text_len=int(args.text_len))
 
         emb = _encode_t5(encoder, instr, device=device)
+        abs_pt.parent.mkdir(parents=True, exist_ok=True)
         torch.save(emb, abs_pt)
         ep["t5_embedding_path"] = rel
         updated += 1
@@ -245,5 +287,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

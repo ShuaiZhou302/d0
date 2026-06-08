@@ -587,16 +587,6 @@ def create_dataloaders(config: OmegaConf, rank: int, world_size: int) -> tuple:
         drop_last=True,
     )
 
-    # Debug: print the first train batch once on rank 0.
-    if rank == 0:
-        try:
-            first_batch = next(iter(train_dataloader))
-            print("First train batch:", first_batch)
-        except StopIteration:
-            logger.warning("Train dataloader is empty; cannot print first batch.")
-        except Exception as e:
-            logger.warning(f"Failed to print first train batch: {e}")
-    
     val_dataloader = DataLoader(
         val_dataset,
         batch_size=config.training.batch_size,
@@ -646,9 +636,12 @@ def main():
     if args.run_name is not None:
         config.logging.run_name = args.run_name
     # Decide backbone loading policy:
-    # If resuming or finetuning from a pretrain checkpoint, skip loading WAN/VLM pretrained weights.
+    # If resuming, finetuning, or continued-pretraining from a Motus checkpoint,
+    # skip separately loading WAN/VLM pretrained backbones before partial init.
     try:
+        pretrain_ckpt = getattr(config.pretrain, 'checkpoint_path', None) if hasattr(config, 'pretrain') else None
         if (getattr(config.resume, 'checkpoint_path', None) or
+            pretrain_ckpt or
             (hasattr(config, 'finetune') and getattr(config.finetune, 'checkpoint_path', None))):
             config.model.load_pretrained_backbones = False
     except Exception:
@@ -724,6 +717,17 @@ def main():
         logger.info("Creating UniDiffuser model and optimizer...")
         model, optimizer, scheduler = create_model_and_optimizer(config)
 
+        # Optional: initialize continued pretraining from an existing Motus checkpoint.
+        pretrain_ckpt = getattr(config.pretrain, 'checkpoint_path', None) if hasattr(config, 'pretrain') else None
+        if getattr(config, 'training_mode', 'finetune') == 'pretrain' and pretrain_ckpt:
+            logger.info(f"Loading continued-pretrain weights from {pretrain_ckpt} (partial)...")
+            try:
+                model.load_continued_pretrain_weights(pretrain_ckpt)
+                logger.info("Continued-pretrain weights loaded (partial).")
+            except Exception as e:
+                logger.error(f"Failed to load continued-pretrain weights: {e}")
+                raise
+
         # Optional: load finetune weights for partial init
         finetune_ckpt = getattr(config.finetune, 'checkpoint_path', None) if hasattr(config, 'finetune') else None
         if getattr(config, 'training_mode', 'finetune') == 'finetune' and finetune_ckpt:
@@ -733,6 +737,7 @@ def main():
                 logger.info("Finetune weights loaded (partial).")
             except Exception as e:
                 logger.error(f"Failed to load finetune weights: {e}")
+                raise
         
         # Create dataloaders
         logger.info("Creating dataloaders...")

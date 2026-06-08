@@ -251,6 +251,14 @@ def _create_single_dataset(config: OmegaConf, val: bool = False):
             params['dataset_dir'] = [str(p) for p in dataset_dir]
         if hasattr(config.dataset, 'max_episodes'):
             params['max_episodes'] = config.dataset.max_episodes
+        if hasattr(config.dataset, 'val_ratio'):
+            params['val_ratio'] = config.dataset.val_ratio
+        if hasattr(config.dataset, 'split_seed'):
+            params['split_seed'] = config.dataset.split_seed
+        if hasattr(config.dataset, 'max_train_episodes_per_task'):
+            params['max_train_episodes_per_task'] = config.dataset.max_train_episodes_per_task
+        if hasattr(config.dataset, 'max_val_episodes_per_task'):
+            params['max_val_episodes_per_task'] = config.dataset.max_val_episodes_per_task
         if hasattr(config.dataset, 'image_aug'):
             params['image_aug'] = config.dataset.image_aug and not val
 
@@ -360,6 +368,14 @@ def _create_single_dataset(config: OmegaConf, val: bool = False):
             params['task_name'] = config.dataset.task_name
         if hasattr(config.dataset, 'max_episodes'):
             params['max_episodes'] = config.dataset.max_episodes
+        if hasattr(config.dataset, 'val_ratio'):
+            params['val_ratio'] = config.dataset.val_ratio
+        if hasattr(config.dataset, 'split_seed'):
+            params['split_seed'] = config.dataset.split_seed
+        if hasattr(config.dataset, 'max_train_episodes_per_task'):
+            params['max_train_episodes_per_task'] = config.dataset.max_train_episodes_per_task
+        if hasattr(config.dataset, 'max_val_episodes_per_task'):
+            params['max_val_episodes_per_task'] = config.dataset.max_val_episodes_per_task
         if hasattr(config.dataset, 'image_aug'):
             params['image_aug'] = config.dataset.image_aug and not val
 
