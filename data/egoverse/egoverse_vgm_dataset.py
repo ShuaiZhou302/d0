@@ -41,6 +41,9 @@ class EgoVerseTrimodalDataset(data.Dataset):
         image_aug: bool = False,
         vlm_checkpoint_path: Optional[str] = None,
         max_samples: Optional[int] = None,
+        adaptive_downsample: bool = False,
+        min_downsample_rate: int = 2,
+        max_downsample_rate: int = 8,
         val: bool = False,
         seed: int = 0,
         **kwargs: Any,
@@ -48,6 +51,14 @@ class EgoVerseTrimodalDataset(data.Dataset):
         super().__init__()
         self.manifest = Path(manifest or (val_manifest if val else train_manifest))
         self.global_downsample_rate = int(global_downsample_rate)
+        self.adaptive_downsample = bool(adaptive_downsample)
+        self.min_downsample_rate = int(min_downsample_rate)
+        self.max_downsample_rate = int(max_downsample_rate)
+        if self.min_downsample_rate <= 0 or self.max_downsample_rate < self.min_downsample_rate:
+            raise ValueError(
+                f"Invalid adaptive downsample range: min={self.min_downsample_rate}, "
+                f"max={self.max_downsample_rate}"
+            )
         self.video_action_freq_ratio = int(video_action_freq_ratio)
         self.num_video_frames = int(num_video_frames)
         self.action_dim = int(action_dim)
@@ -72,12 +83,17 @@ class EgoVerseTrimodalDataset(data.Dataset):
                 logger.warning("Failed to load VLM processor from %s: %s", vlm_checkpoint_path, exc)
 
         logger.info(
-            "EgoVerseTrimodalDataset initialized: manifest=%s samples=%d val=%s action_mode=%s action_chunk_size=%d",
+            "EgoVerseTrimodalDataset initialized: manifest=%s samples=%d val=%s action_mode=%s "
+            "action_chunk_size=%d adaptive_downsample=%s gap_range=[%d,%d] fixed_gap=%d",
             self.manifest,
             len(self.rows),
             self.val,
             self.action_mode,
             self.action_chunk_size,
+            self.adaptive_downsample,
+            self.min_downsample_rate,
+            self.max_downsample_rate,
+            self.global_downsample_rate,
         )
 
     @staticmethod
@@ -97,10 +113,19 @@ class EgoVerseTrimodalDataset(data.Dataset):
     def __len__(self) -> int:
         return len(self.rows) * (1 if self.val else 100)
 
+    def _select_step(self, start_frame: int, end_frame: int) -> int:
+        if not self.adaptive_downsample:
+            return self.global_downsample_rate
+
+        for step in range(self.max_downsample_rate, self.min_downsample_rate - 1, -1):
+            if end_frame - start_frame >= 1 + self.num_video_frames * step:
+                return step
+        return self.min_downsample_rate
+
     def _select_indices(self, row: dict[str, Any], idx: int) -> tuple[int, list[int]]:
-        step = self.global_downsample_rate
         start_frame = int(row["start_frame"])
         end_frame = int(row["end_frame"])
+        step = self._select_step(start_frame, end_frame)
         max_condition = end_frame - self.num_video_frames * step
         if max_condition <= start_frame:
             condition_idx = start_frame

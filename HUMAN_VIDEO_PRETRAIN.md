@@ -68,7 +68,9 @@ Batch and clip format:
 batch_size: 6 per GPU
 8 GPUs -> global batch 48 clips/step
 num_video_frames: 8
-global_downsample_rate: 2
+adaptive_downsample: true
+preferred frame gap: 8
+fallback frame gaps: 7, 6, 5, 4, 3, 2
 ```
 
 Each dataset sample is one segment-level video clip:
@@ -85,8 +87,12 @@ initial_state:     not used
 The model predicts the future frames at:
 
 ```text
-t + 2, t + 4, ..., t + 16
+t + gap, t + 2*gap, ..., t + 8*gap
 ```
+
+For 30Hz EgoVerse videos, the preferred `gap=8` covers about 2.13 seconds.
+If a segment is too short, the dataset falls back to smaller gaps while keeping
+all sampled frames inside the annotated segment.
 
 Loss:
 
@@ -100,9 +106,17 @@ Validation:
 
 ```text
 val_interval: 50000
+validation_mode: loss_only
+val_num_batches: 8
 ```
 
-Validation uses the EgoVerse val manifest to monitor human-video prediction quality. Downstream claims should still be based on robot success-rate evaluation, not pretraining loss alone.
+Validation uses the EgoVerse val manifest to monitor human-video prediction
+quality. It runs a no-grad, teacher-forced `training_step` on held-out
+segments and logs `val/loss_only/video_loss`, `val/loss_only/total_loss`, and a
+W&B `val/loss_only_table`. It deliberately does not call sampling-time
+`inference_step`, so it does not require robot state or real action labels.
+Downstream claims should still be based on robot success-rate evaluation, not
+pretraining loss alone.
 
 ## Checkpoint Loading Fix
 

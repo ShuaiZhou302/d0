@@ -369,6 +369,103 @@ class UniDiffuserTrainer:
         metrics = {k: v.item() if torch.is_tensor(v) else v for k, v in loss_dict.items()}
         
         return metrics
+
+    @torch.no_grad()
+    def validate_loss_only(self, num_batches: int = 8) -> Dict[str, float]:
+        """Teacher-forced validation loss for human/video pretraining.
+
+        This intentionally mirrors ``train_step`` without backward/optimizer
+        and does not call sampling-time inference. It is the right validation
+        path for human-only EgoVerse batches where actions are zero placeholders
+        and action loss is disabled.
+        """
+        self.model.eval()
+        model = self.model.module if hasattr(self.model, 'module') else self.model
+
+        sums: Dict[str, float] = {}
+        count = 0
+        for step, batch in enumerate(self.val_dataloader):
+            if step >= num_batches:
+                break
+            if batch is None:
+                continue
+
+            first_frame = batch['first_frame'].to(self.device, dtype=self.dtype)
+            video_frames = batch['video_frames'].to(self.device, dtype=self.dtype)
+            language_embeddings = batch['language_embedding']
+            if language_embeddings is not None:
+                language_embeddings = language_embeddings.to(self.device, dtype=self.dtype)
+
+            state = batch.get('initial_state', None)
+            if state is not None:
+                state = state.to(self.device, dtype=self.dtype)
+
+            actions = batch['action_sequence'].to(self.device, dtype=self.dtype)
+            action_mask = batch.get('action_mask', None)
+            if action_mask is not None:
+                action_mask = action_mask.to(self.device)
+
+            vlm_inputs = batch['vlm_inputs']
+            if vlm_inputs is not None:
+                vlm_inputs = {
+                    k: v.to(self.device) if isinstance(v, torch.Tensor) else v
+                    for k, v in vlm_inputs.items()
+                }
+
+            loss_dict = model.training_step(
+                first_frame=first_frame,
+                video_frames=video_frames,
+                state=state,
+                actions=actions,
+                language_embeddings=language_embeddings,
+                vlm_inputs=vlm_inputs,
+                action_mask=action_mask,
+                return_dict=True,
+                train_lap=self.train_lap,
+            )
+
+            for key, value in loss_dict.items():
+                if value is None:
+                    continue
+                if torch.is_tensor(value):
+                    value = value.detach().float().item()
+                if isinstance(value, (int, float)):
+                    sums[key] = sums.get(key, 0.0) + float(value)
+            count += 1
+
+        self.model.train()
+        if count == 0:
+            return {}
+
+        metrics = {f"loss_only/{key}": value / count for key, value in sums.items()}
+        metrics["loss_only/num_batches"] = float(count)
+        return metrics
+
+    def log_loss_only_validation(self, val_metrics: Dict[str, float]) -> None:
+        """Log loss-only validation metrics to logger, TensorBoard, and W&B."""
+        if not val_metrics:
+            logger.warning("Loss-only validation produced no metrics.")
+            return
+
+        summary = ", ".join(f"{k}={v:.4f}" for k, v in sorted(val_metrics.items()))
+        logger.info(f"Loss-only validation - Step {self.global_step}: {summary}")
+
+        if self.tb_writer is not None:
+            for key, value in val_metrics.items():
+                self.tb_writer.add_scalar(f"val/{key}", float(value), self.global_step)
+
+        if "wandb" in self.report_to:
+            wandb_metrics = {
+                f"val/{key}": float(value)
+                for key, value in val_metrics.items()
+                if isinstance(value, (int, float))
+            }
+            table = wandb.Table(
+                columns=["step"] + list(val_metrics.keys()),
+                data=[[self.global_step] + [float(v) for v in val_metrics.values()]],
+            )
+            wandb_metrics["val/loss_only_table"] = table
+            wandb.log(wandb_metrics, step=self.global_step)
     
     def train(self, max_steps: int, resume_from: Optional[str] = None, val_interval: int = 500, reset_scheduler: Optional[bool] = None):
         """
@@ -468,12 +565,18 @@ class UniDiffuserTrainer:
             # Validation: rank0-only local eval; then synchronize all processes
             if self.global_step % val_interval == 0 and self.val_dataloader is not None:
                 if self.rank == 0:
-                    val_metrics = evaluate_model(
-                        self.model, self.val_dataloader, self.accelerator, self.config,
-                        num_eval_batches=2
-                    )
-                    logger.info(f"Validation - Step {self.global_step}")
-                    log_evaluation_metrics(val_metrics, self.tb_writer, self.accelerator, self.global_step)
+                    validation_mode = getattr(self.config.system, "validation_mode", "inference")
+                    if validation_mode == "loss_only":
+                        num_val_batches = int(getattr(self.config.system, "val_num_batches", 8))
+                        val_metrics = self.validate_loss_only(num_batches=num_val_batches)
+                        self.log_loss_only_validation(val_metrics)
+                    else:
+                        val_metrics = evaluate_model(
+                            self.model, self.val_dataloader, self.accelerator, self.config,
+                            num_eval_batches=2
+                        )
+                        logger.info(f"Validation - Step {self.global_step}")
+                        log_evaluation_metrics(val_metrics, self.tb_writer, self.accelerator, self.global_step)
                 # Use explicit barrier with device_ids to avoid NCCL warnings
                 if dist.is_available() and dist.is_initialized():
                     try:

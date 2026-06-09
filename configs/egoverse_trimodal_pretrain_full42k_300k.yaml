@@ -4,7 +4,8 @@ common:
   num_video_frames: 8
   video_height: 384
   video_width: 320
-  global_downsample_rate: 2
+  # Fallback fixed gap when adaptive_downsample is disabled.
+  global_downsample_rate: 8
   video_action_freq_ratio: 1
 
 dataset:
@@ -14,6 +15,12 @@ dataset:
   action_mode: "zeros"
   image_aug: false
   seed: 0
+  params:
+    # EgoVerse videos are 30Hz. Prefer the longest in-segment horizon:
+    # try gap 8 first, then 7/6/5/4/3/2 if the segment is too short.
+    adaptive_downsample: true
+    min_downsample_rate: 2
+    max_downsample_rate: 8
 
 training_mode: "pretrain"
 
@@ -89,6 +96,8 @@ system:
   log_interval: 1
   save_interval: 50000
   val_interval: 50000
+  validation_mode: "loss_only"
+  val_num_batches: 8
   num_workers: 16
   pin_memory: true
 
