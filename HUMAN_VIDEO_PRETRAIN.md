@@ -214,3 +214,54 @@ Ours - Baseline at the same finetuning step
 ```
 
 Offline video/action losses can be used as smoke diagnostics, but they should not replace simulator success-rate evaluation.
+
+## VITRA-1M Human Subset
+
+VITRA-1M is now treated as another human-video pretraining subset, alongside
+EgoVerse. The dataset is hosted at:
+
+```text
+https://huggingface.co/datasets/VITRA-VLA/VITRA-1M
+```
+
+Important distinction:
+
+```text
+VITRA-1M: human V-L-A metadata and annotations
+VITRA-TeleData: robot teleoperation data
+```
+
+For our human-video pretraining we want `VITRA-1M`, not TeleData.
+
+VITRA-1M contains about 1.22M short episodes:
+
+```text
+ego4d_cooking_and_cleaning: 454244
+ego4d_other:                494439
+epic:                       154464
+egoexo4d:                    67053
+ssv2:                        52718
+```
+
+The Hugging Face repository is about 91.6GB and stores metadata tar files,
+not raw videos. Each extracted episode is a single `.npy` dictionary with:
+
+```text
+video_name
+video_decode_frame
+text / text_rephrase
+camera intrinsics/extrinsics
+MANO left/right hand reconstruction
+```
+
+This means VITRA can be converted into an EgoVerse-style segment manifest, but
+actual RGB training requires raw videos from the corresponding source datasets
+or a separate video path mapping. The helper script is:
+
+```text
+data/vitra/build_vitra_manifest.py
+```
+
+It scans extracted VITRA `.npy` episodes, splits train/val at episode level,
+writes `metas/` text files, and records whether each episode can be matched to
+a raw video path.
